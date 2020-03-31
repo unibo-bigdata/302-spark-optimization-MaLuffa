@@ -49,22 +49,37 @@ object Exercise extends App {
    * @param sc
    */
   def exercise1(sc: SparkContext): Unit = {
-    val rddWeather = sc.textFile("hdfs:/bigdata/dataset/weather-sample").map(WeatherData.extract)
+    val rddWeather = sc.textFile("hdfs:/bigdata/dataset/weather-sample").map(WeatherData.extract) //extract mi serve x parsare i dati e costruire l'rdd
 
+    /*//per mettere questo codice sulla shell devo mettere inline i diversi step
     // Average temperature for every month
     rddWeather
-      .filter(_.temperature<999)
-      .map(x => (x.month, x.temperature))
-      .aggregateByKey((0.0,0.0))((a,v)=>(a._1+v,a._2+1),(a1,a2)=>(a1._1+a2._1,a1._2+a2._2))
-      .map({case(k,v)=>(k,v._1/v._2)})
-      .collect()
+      .filter(_.temperature<999) //considero solo le temperature con un valore <999, xk se non c'è valore x la temp viene inserito 999
+      .map(x => (x.month, x.temperature))//organizzo l'rdd in una coppia chiave-valore (mese-temperatura)
+      .aggregateByKey((0.0,0.0))((a,v)=>(a._1+v,a._2+1),(a1,a2)=>(a1._1+a2._1,a1._2+a2._2)) //aggregazione k mantiene separate somma e conteggio
+      .map({case(k,v)=>(k,v._1/v._2)}) //calcolo il valore finale della temperatura media
+      .collect()*/
 
-    // Maximum temperature for every month
+    //Average temperature for every month optimized
+    // (x evitare le ripetizioni uso cache nel momento opportuno,
+    // per un buon numero di partizioni dipende da quanti core ho (2-4 partizioni per core)
+    //coalesce e repartition creano tot partizioni ma non definiscono un criterio di partizionamento (partitioner = none)
+    //che può essere impostato nel momento in cui il mio rdd è un rdd chiave-valore
+    val cachedRdd = rddWeather.coalesce(8).filter(_.temperature<999).map(x => (x.month, x.temperature)).cache()
+    cachedRdd
+        .aggregateByKey((0.0,0.0))((a,v)=>(a._1+v,a._2+1),(a1,a2)=>(a1._1+a2._1,a1._2+a2._2))
+        .map({case(k,v)=>(k,v._1/v._2)})
+        .collect()
+
+    /*// Maximum temperature for every month
     rddWeather
       .filter(_.temperature<999)
       .map(x => (x.month, x.temperature))
-      .reduceByKey((x,y)=>{if(x<y) y else x})
-      .collect()
+      .reduceByKey((x,y)=>{if(x<y) y else x})//invece di calcolare la media calcolo il massimo
+      .collect()*/
+
+    //Maximum temperature for every month
+    cachedRdd.reduceByKey((x,y) => if (x<y) y else x).collect()
   }
 
   /**
@@ -108,6 +123,12 @@ object Exercise extends App {
     val rddStation = sc.textFile("hdfs:/bigdata/dataset/weather-info/stations.csv").map(StationData.extract)
 
     // TODO exercise
+
+    val p = new HashPartititeoner(8)
+    val rddW = rddWeather
+      .filter(_.temperature < 999)
+      .map(x => (x.usaf+x.wban, x.temperature)
+
   }
 
   /**

@@ -1,3 +1,13 @@
+/*questo, insieme a WeatherData.scala contengono il codice per fare le letture
+* dei dati del meteo, per farne il parsing (nel dataset weather-sample contiene i dati sulle rilevazioni
+* meteo in una giornata in una centralina, nel dataset station ho l'elenco
+* di tutte le stazioni meteo che hanno collezionato le rilevazioni, dentro
+* le stazioni ci sono riferimenti geografici (città, stato)).
+* Inoltre creano un rdd con una struttura: all'interno dell'rdd vengono messi degli
+* oggetti in modo da consentire di fare riferimento ai singoli campi tramite il nome,
+* altrimenti non potremmo visto che l'rdd non ha un concetto di struttura (non c'è
+* il nome delle colonne). Un altro modo di aggiungere struttura agli rdd è tramite
+* un'altra struttura dati: il dataframe*/
 object StationData {
   def extract(row:String) = {
     def getDouble(str:String) : Double = {
@@ -15,8 +25,8 @@ object StationData {
 }
 
 case class StationData(
-  usaf:String,
-  wban:String,
+  usaf:String, //codice usato per il join, insieme a wban, infatti sono anche in WeatherData
+  wban:String, //codice usato per il join, insieme a usaf, infatti sono anche in WeatherData
   name:String,
   country:String,
   state:String,

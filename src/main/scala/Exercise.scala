@@ -1,4 +1,4 @@
-import org.apache.spark.SparkContext
+import org.apache.spark.{HashPartitioner, SparkContext}
 import org.apache.spark.sql.SparkSession
 
 
@@ -91,10 +91,13 @@ object Exercise extends App {
     val p = new HashPartitioner(8)
 
     val rddStation = sc.textFile("hdfs:/bigdata/dataset/weather-info/stations.csv").map(StationData.extract)
-
+    //sapendo che lou seremo + volte qual è il modo migliore x organizzarlo?
+    // Alcune non potrebbero nemmeno essere eseguite (le prime 2 in quanto partitionBy imposta
+    // un criterio di partizionamento e lo può fare solo su un rdd chiave-valore, cosa che fa il keyBy).
+    //Tra la 3 e la 4 va scelta la 3 in quanto fare il cache prima del partizionamento keyBy non ha senso
     // val rddS1 = rddStation.partitionBy(p).keyBy(x => x.usaf + x.wban).cache()
     // val rddS2 = rddStation.partitionBy(p).cache().keyBy(x => x.usaf + x.wban)
-    // val rddS3 = rddStation.keyBy(x => x.usaf + x.wban).partitionBy(p).cache()
+    val rddS3 = rddStation.keyBy(x => x.usaf + x.wban).partitionBy(p).cache()
     // val rddS4 = rddStation.keyBy(x => x.usaf + x.wban).cache().partitionBy(p)
 
   }
@@ -114,7 +117,8 @@ object Exercise extends App {
    * - Consider partitioning and caching to optimize the join
    * - Careful: it is not enough for the two RDDs to have the same number of partitions;
    *   they must have the same partitioner!
-   * - Verify the execution plan of the join in the web UI
+   * - Verify the execution plan of the join in the web UI (con .toDebugString in cui ogni passo di indentazione
+    * mi identifica uno stage diverso, separati da shuffling)
    *
    * @param sc
    */
@@ -122,12 +126,30 @@ object Exercise extends App {
     val rddWeather = sc.textFile("hdfs:/bigdata/dataset/weather-sample").map(WeatherData.extract)
     val rddStation = sc.textFile("hdfs:/bigdata/dataset/weather-info/stations.csv").map(StationData.extract)
 
-    // TODO exercise
-
-    val p = new HashPartititeoner(8)
+  //li trasformo in rdd chiave-valore e gli applico lo stesso criterio di partizionamento
+    val p = new HashPartitioner(8)
     val rddW = rddWeather
       .filter(_.temperature < 999)
-      .map(x => (x.usaf+x.wban, x.temperature)
+      .keyBy(x => x.usaf + x.wban)
+      .partitionBy(p)
+    val rddS = rddStation
+      .keyBy(x => x.usaf + x.wban)
+      .partitionBy(p)
+    val joinedRdd = rddS.join(rddW).cache() //posso anche fare join nell'altro verso
+
+    val maxTempPerCity = joinedRdd
+      .map({case(_,v) => (v._1.name, v._2.temperature)})
+      .reduceByKey((x,y) => if(x<y) y else x)
+      .collect()
+
+    val maxTempPerITCity = joinedRdd
+      .filter(_._2._1.country == "IT")
+      .map({case(_,v) => (v._1.name, v._2.temperature)})
+      .reduceByKey((x,y) => if(x<y) y else x)
+      .map({case(k,v) => (v,k)})
+      .sortByKey(false)
+      .collect()
+
 
   }
 
@@ -139,14 +161,16 @@ object Exercise extends App {
     import org.apache.spark.storage.StorageLevel._
     val rddWeather = sc.textFile("hdfs:/bigdata/dataset/weather-sample").map(WeatherData.extract)
 
+    //richiama lo spark context x svuotare tutto il contenuto che c'era in memoria
     sc.getPersistentRDDs.foreach(_._2.unpersist())
 
-    val memRdd = rddWeather.sample(false,0.1).repartition(8).cache()
-    val memSerRdd = memRdd.map(x=>x).persist(MEMORY_ONLY_SER)
-    val diskRdd = memRdd.map(x=>x).persist(DISK_ONLY)
 
+    val memRdd = rddWeather.sample(false,0.1).repartition(8).cache()
+    val memSerRdd = memRdd.map(x=>x).persist(MEMORY_ONLY_SER)//la metto in memoria serializzata, così occupa meno spazio
+    val diskRdd = memRdd.map(x=>x).persist(DISK_ONLY)//la metto su disco
+    //prima di questi collect non c'è ancora niente in memoria
     memRdd.collect()
-    memSerRdd.collect()
+    memSerRdd.collect()//anche se eseguo solo qst senza il precedente, siccome memSer parte da mem, verrà eseguito anche il codice di mem (riga 149)
     diskRdd.collect()
   }
 
@@ -169,13 +193,13 @@ object Exercise extends App {
     val rddStation = sc.textFile("hdfs:/bigdata/dataset/weather-info/stations.csv").map(StationData.extract)
 
     val rddW = rddWeather
-      .sample(false,0.1)
+      .sample(false,0.1) //fatto x ridurre i dati e semplificare l'esecuzione
       .filter(_.temperature<999)
       .keyBy(x => x.usaf + x.wban)
-      .cache()
+      .cache() //se lo utilizzo una volta sola non avrebbe senso metterlo in cache, qui serve x fare le prove
     val rddS = rddStation
       .keyBy(x => x.usaf + x.wban)
-      .partitionBy(new HashPartitioner(8))
+      .partitionBy(new HashPartitioner(8)) //gli imposto il criterio di partizione, cosa faccio a qst punto?
       .cache()
 
     // Collect to enforce caching
@@ -183,6 +207,7 @@ object Exercise extends App {
     rddS.collect
 
     // Is it better to simply join the two RDDs..
+    //rddS è organizzato secondo un criterio e rddW no
     rddW
       .join(rddS)
       .filter(_._2._2.country=="IT")
@@ -191,6 +216,7 @@ object Exercise extends App {
       .collect()
 
     // ..to enforce on rddW1 the same partitioner of rddS..
+    //semplifico il join xk ho già le coppie di partizione organizzate
     rddW
       .partitionBy(new HashPartitioner(8))
       .join(rddS)
@@ -200,7 +226,7 @@ object Exercise extends App {
       .collect()
 
     // ..or to exploit broadcast variables?
-    val bRddS = sc.broadcast(rddS.collectAsMap())
+    val bRddS = sc.broadcast(rddS.collectAsMap())//esco dalla struttura dell rddS e lo riporto in memoria centrale, duplicandolo poi in ogni executor
     val rddJ = rddW
       .map({case (k,v) => (bRddS.value.get(k),v)})
       .filter(_._1!=None)
@@ -211,5 +237,13 @@ object Exercise extends App {
       .reduceByKey((x,y)=>{if(x<y) y else x})
       .collect()
   }
+
+  /* La scelta migliore è la 3. perché non richiede un trasferimento di dati come fa il join. In realtà
+  l'ho fatto prima, ho trasferito rddS a tutti gli executor (che un po' mi è costato ma poco). Il join poi
+  viene fatto localmente perché x ogni partizione di rddW il contenuto di rddS ce l'ho direttamente in
+  memoria quindi vi accedo per recuperarlo. Poi la reduce la faccio lo stesso, ma il join iniziale lo salto.
+  Throwback: posso ricorrere a questo stratagemma solo se l'rddS non è troppo grande e nn supera la disponibilità
+  di memoria di un executor e inoltre c'è una duplicazione per ogni executor
+   */
 
 }
